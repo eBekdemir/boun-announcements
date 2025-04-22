@@ -1,0 +1,6 @@
+**.log
+.env
+**.env
+**.local
+*.local
+**.db
