@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup as bs
 import time
 ### python-telegram-bot==13.15
 from telegram import Bot, Update, ParseMode
-from telegram.ext import Updater, CommandHandler, CallbackContext, JobQueue
+from telegram.ext import Updater, CommandHandler, CallbackContext, JobQueue, MessageHandler, Filters
 from telegram.error import TelegramError, Unauthorized, BadRequest, TimedOut, NetworkError
 from dotenv import load_dotenv
 import os
@@ -49,14 +49,15 @@ def init_db():
     with db_lock:
         with sqlite3.connect(db_path) as conn:
             c = conn.cursor()
-            # Table for subscribers
             c.execute('''CREATE TABLE IF NOT EXISTS chat_ids (
                             id INTEGER PRIMARY KEY,
+                            first_name TEXT,
+                            last_name TEXT,
+                            username TEXT,
                             main_announcements BOOLEAN DEFAULT 1,
                             yadyok_announcements BOOLEAN DEFAULT 1,
                             mis_announcements BOOLEAN DEFAULT 1
                             )''')
-            # Table for announcements
             c.execute('''CREATE TABLE IF NOT EXISTS main_announcements (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             announcement TEXT UNIQUE NOT NULL
@@ -69,15 +70,34 @@ def init_db():
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             announcement TEXT UNIQUE NOT NULL
                             )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS messages (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            chat_id INTEGER,
+                            message TEXT,
+                            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                            )''')
             conn.commit()
     logger.info("Database initialized.")
 
-def save_chat_id(chat_id) -> bool:
+def save_chat_id(user) -> bool:
+    chat_id = user.id
+    if not chat_id:
+        logger.warning("No chat ID found in user object.")
+        return False
+    
     with db_lock:
         try:
             with sqlite3.connect(db_path) as conn:
                 c = conn.cursor()
-                c.execute("INSERT OR IGNORE INTO chat_ids (id) VALUES (?)", (chat_id,))
+                c.execute("""
+                    INSERT OR REPLACE INTO chat_ids (id, first_name, last_name, username)
+                    VALUES (?, ?, ?, ?)
+                    """, (
+                    user.id,
+                    user.first_name,
+                    user.last_name,
+                    user.username
+                ))
                 conn.commit()
                 logger.info(f"Attempted to save chat ID {chat_id}.")
                 return True
@@ -167,6 +187,32 @@ def unsubscribe(chat_id, announcement_type) -> bool:
         except sqlite3.Error as e:
             logger.error(f"Database error unsubscribing chat ID {chat_id}: {e}")
             return False
+
+def handle_message(update: Update, context: CallbackContext):
+    chat_id = update.effective_chat.id
+    message_text = update.message.text
+
+    save_message(chat_id, message_text)
+
+    logger.info(f"Received message from {chat_id}: {message_text}")
+
+def save_message(chat_id, message):
+    with db_lock:
+        try:
+            with sqlite3.connect(db_path) as conn:
+                c = conn.cursor()
+                c.execute("""
+                    INSERT INTO messages (chat_id, message)
+                    VALUES (?, ?)
+                """, (chat_id, message))
+                conn.commit()
+                logger.info(f"Saved message from {chat_id}")
+        except sqlite3.Error as e:
+            logger.error(f"Error saving message: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error saving message: {e}")
+
+
 
 ### --- Database Functions ---
 def get_announcements_from_db(table='yadyok') -> set[str]:
@@ -302,7 +348,7 @@ def start(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     user_name = update.effective_user.first_name
     logger.info(f"/start command received from {user_name} ({chat_id})")
-    if save_chat_id(chat_id):
+    if save_chat_id(update.effective_chat):
         update.message.reply_text(
             f"Merhaba {user_name}! 👋\n"
             f"Benim görevim yeni bir duyuru olduğunda sana haber vermek.\n"
@@ -529,6 +575,8 @@ def main():
     dispatcher.add_handler(CommandHandler("unsubscribe_yadyok", unsubscribe_from_yadyok))
     dispatcher.add_handler(CommandHandler("subscribe_mis", subscribe_to_mis))
     dispatcher.add_handler(CommandHandler("unsubscribe_mis", unsubscribe_from_mis))
+    
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
     
     logger.info("Command handlers registered.")
