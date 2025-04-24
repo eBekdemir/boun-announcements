@@ -8,6 +8,7 @@ import time
 from telegram import Bot, Update, ParseMode
 from telegram.ext import Updater, CommandHandler, CallbackContext, JobQueue, MessageHandler, Filters
 from telegram.error import TelegramError, Unauthorized, BadRequest, TimedOut, NetworkError
+
 from dotenv import load_dotenv
 import os
 import logging
@@ -15,6 +16,11 @@ import sqlite3
 import threading
 import urllib3
 import pandas as pd
+
+from win10toast import ToastNotifier
+toaster = ToastNotifier()
+toaster.show_toast("The BOUN Announcements Bot", "The Bot has just started!", duration=5, threaded=True)
+
 
 load_dotenv()
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -25,7 +31,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-db_path = 'yadyok.db'
+db_path = 'theDataBase.db'
 db_lock = threading.Lock()
 
 session = requests.Session()
@@ -99,6 +105,8 @@ def save_chat_id(user) -> bool:
                     user.username
                 ))
                 conn.commit()
+                toaster.show_toast("The BOUN Announcements Bot", f"New user: {user.first_name}", duration=5, threaded=True)
+                
                 logger.info(f"Attempted to save chat ID {chat_id}.")
                 return True
         except sqlite3.Error as e:
@@ -375,10 +383,6 @@ def fetch_latest_announcements(update: Update, context: CallbackContext, table, 
             update.message.reply_text("Duyuruları getirirken bir veritabanı hatası oluştu. 😟")
             return 
     if rows:
-        def escape_md(text):
-            escape_chars = r'_*[]()~`>#+-=|{}.!'
-            # Need to escape the escape character itself
-            return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
         announcements_text = [f"\\- {escape_md(row[0].strip())}" for row in rows]
         response = "\n".join(announcements_text)
         
@@ -450,15 +454,13 @@ def unsubscribe_from_mis(update: Update, context: CallbackContext):
         update.message.reply_text("MIS duyurularından çıkış yaparken bir sorun oluştu.")
 
 
-
+def escape_md(text):
+        escape_chars = r'_*[]()~`>#+-=|{}.!'
+        return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
 
 def notify_users(bot: Bot, ordered_new_announcements: list[str], chat_ids: list, typ):
     if not ordered_new_announcements or not chat_ids:
         return
-
-    def escape_md(text):
-        escape_chars = r'_*[]()~`>#+-=|{}.!'
-        return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
 
     # Format using the received order
     escaped_announcements = [f"\\- {escape_md(ann.strip())}" for ann in ordered_new_announcements]
